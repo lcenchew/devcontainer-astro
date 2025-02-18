@@ -1,0 +1,92 @@
+name: Copy Devcontainer Settings
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'The name of the target repository (e.g., your-repo)'
+        required: true
+        type: string
+      checkout_branch:
+        description: 'The branch to checkout in the target repository (e.g., main, develop)'
+        default: 'main'
+        type: string
+      push_branch:
+        description: 'The branch to push changes to in the target repository (e.g., suggested-update)'
+        default: 'suggested-update'
+        type: string
+
+jobs:
+  copy_devcontainer_settings:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      
+    steps:
+      - name: Checkout Target Repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ github.event.inputs.target_repo }}
+          token: ${{ secrets.PAT }}
+          ref: ${{ github.event.inputs.checkout_branch }}
+          
+      - name: Checkout Settings Repo (Current Repo)
+        uses: actions/checkout@v4
+        with:
+          path: settings_repo
+
+      - name: Copy Devcontainer Files (Overwrite existing)
+        run: |
+          mkdir -p .devcontainer
+          cp -rf settings_repo/.devcontainer/* ./.devcontainer/  
+          rm -rf settings_repo
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      # - name: Checkout or Create Push Branch # Improved Branch Handling
+      #   run: |
+      #     git fetch origin ${{ github.event.inputs.push_branch }} || git checkout --orphan ${{ github.event.inputs.push_branch }}
+      #     echo "new_branch=${{ github.event.inputs.push_branch }}" >> $GITHUB_ENV
+
+      - name: Check if Push Branch Exists (Remote Check)
+        id: check_branch
+        run: |
+          if git ls-remote --heads origin ${{ github.event.inputs.push_branch }} | wc -l; then 
+            timestamp=$(date +%s)
+            echo "${{ github.event.inputs.push_branch }}-${timestamp}"
+            new_branch_name="${{ github.event.inputs.push_branch }}-${timestamp}"
+            echo "new_branch=${new_branch_name}" >> $GITHUB_ENV
+          else
+            echo "new_branch=${{ github.event.inputs.push_branch }}" >> $GITHUB_ENV
+          fi
+
+      - name: Commit and Push Changes to Target Repo
+        run: |
+          git checkout -b ${{ env.new_branch }}
+          git add .
+          commit_title="chore(devcontainer): Update devcontainer settings"
+          commit_body="From: ${{ github.server_url }}/${{ github.repository }}"  
+          git commit -m "${commit_title}" -m "${commit_body}"
+          git push -u origin ${{ env.new_branch }}
+
+      - name: Create Pull Request
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const headBranch = '${{ env.new_branch }}';
+            const baseBranch = '${{ github.event.inputs.checkout_branch }}';
+            const targetRepo = '${{ github.event.inputs.target_repo }}';
+
+            return github.rest.pulls.create({
+              owner: context.repo.owner,  // Use the owner from the current context
+              repo: targetRepo,           
+              title: 'Update devcontainer settings',
+              head: headBranch,
+              base: baseBranch,
+              body: `Automated update of devcontainer settings from ${{ github.server_url }}/${{ github.repository }}`
+            });
